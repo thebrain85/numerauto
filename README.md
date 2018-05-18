@@ -12,9 +12,18 @@ predictions.
 If you encounter a problem or have suggestions, feel free to open an issue.
 
 # Installation
+To install the latest release:
 `pip install --upgrade numerauto`
 
+If you prefer to use the latest development version, clone this github reposistory:
+`git clone https://github.com/thebrain85/numerauto`
+And then run the following command in the numerauto directory.
+`python setup.py install`
+
+
 # Usage
+
+## Example
 Although Numerauto can be run without any event handlers for testing, it will
 not do anything except detecting round changes and downloading the new dataset
 every week.
@@ -22,6 +31,14 @@ every week.
 See `example.py` for a basic example that trains a scikit-learn logistic
 regression model and uploads its predictions.
 
+The example uses the `PredictionUploader` event handler to upload predictions
+to Numerai. This requires you to register an API key in your Numerai account.
+This can be done in Account settings -> Your API Keys -> Add. Select
+'Upload submissions' to be able to upload predictions using this API key. Replace
+'insert your publickey/secretkey here' in the code with your own API public/secret
+API key pair to allow the example code to upload the prediction to your account.
+
+## Custom event handlers
 Implementing your own event handler is easy. Simply create a subclass of
 numerauto.eventhandlers.EventHandler and overload the on_* methods that you
 need to implement your own functionality. The event handler can then be added
@@ -44,3 +61,15 @@ interact with one another, or that keep large amounts of data in memory.
 Ideally, the handler should clean up memory in `on_new_tournament_data` to
 prevent memory being used while the daemon is idle and waiting for the next
 round.
+
+## Persistent state: state.pickle
+
+Numerauto stores a persistent state in the `state.pickle` file in the directory
+from which the daemon is being run. By default, the Numerauto daemon stores
+the last round number that was processed (`last_round_processed`) and the last
+round number on which training was performed (`last_round_trained`). You can
+force the system to reprocess and retrain by stopping the daemon and removing
+the state.pickle file.
+
+Custom event handlers can store persistent information in the `persistent_state`
+dictionary of the Numerauto instance.
