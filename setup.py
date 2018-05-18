@@ -2,24 +2,17 @@ from setuptools import setup
 from setuptools import find_packages
 
 
-def convert_md_to_rst(path):
-    try:
-        from pypandoc import convert_file
-    except ImportError:
-        print("warning: pypandoc module not found, could not convert Markdown to RST")
-        return open(path, 'r').read()
+with open('README.md') as f:
+    long_description = f.read()
 
-    return convert_file(path, 'rst')
-
-
-numerauto_version = 'dev'
+numerauto_version = '0.1.0'
 
 
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: GPL License",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
     "Operating System :: OS Independent",
     "Programming Language :: Python",
     "Programming Language :: Python :: 3",
@@ -33,13 +26,14 @@ if __name__ == "__main__":
         maintainer="The Brain",
         maintainer_email="thebrainz1985@gmail.com",
         description="Daemon to facilitate automatically competing in the Numerai machine learning competition",
-        long_description=convert_md_to_rst('README.md'),
+        long_description=long_description,
+        long_description_content_type='text/markdown',
         url='https://github.com/thebrain85/numerauto',
         platforms="OS Independent",
         classifiers=classifiers,
-        license='GPL License',
+        license='GNU General Public License v3',
         package_data={'numerauto': ['LICENSE', 'README.md']},
-        packages=find_packages(exclude=['tests']),
+        packages=find_packages(),
         python_requires='>=3',
         install_requires=["requests", "pytz", "python-dateutil", "pandas", "numerapi"]
     )
