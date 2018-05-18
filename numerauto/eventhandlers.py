@@ -153,3 +153,6 @@ class PredictionUploader(EventHandler):
         except NumerAPIError as e:
             logger.error('PredictionUploader(%s): NumerAPI exception in round %d: %s',
                          self.name, round_number, e)
+            logger.error('PredictionUploader(%s): Predictions not uploaded successfully, '
+                         'please upload %s manually, or remove state.pickle and restart '
+                         'Numerauto to process this round again', prediction_path / self.filename)
