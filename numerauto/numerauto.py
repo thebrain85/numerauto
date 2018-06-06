@@ -18,9 +18,11 @@ import dateutil
 
 from .robust_numerapi import RobustNumerAPI
 from .utils import check_dataset
+from .utils import Waiter
 
 
 logger = logging.getLogger(__name__)
+waiter = Waiter()
 
 
 class Numerauto:
@@ -56,7 +58,6 @@ class Numerauto:
         self.tournament_id = tournament_id
         self.data_directory = Path(data_directory)
         self.napi = RobustNumerAPI(verbosity='warning', show_progress_bars=False)
-        self.exit_requested = False
         self.event_handlers = []
         self.dataset_path = None
         self.persistent_state = None
@@ -157,30 +158,6 @@ class Numerauto:
         self.on_new_tournament_data(round_number)
 
 
-    def interruptible_wait(self, seconds):
-        """
-        Helper function that waits for a given number of seconds while checking
-        the exit_requested attribute. If exit_requested is set to True, this
-        function will return.
-
-        Args:
-            seconds: Number of seconds to wait.
-        """
-
-        logger.debug('interruptible_wait(%d)', seconds)
-        dt_start = datetime.datetime.utcnow().replace(tzinfo=pytz.utc)
-        dt_now = datetime.datetime.utcnow().replace(tzinfo=pytz.utc)
-
-        while (dt_now - dt_start).total_seconds() < seconds:
-            time.sleep(1)
-            dt_now = datetime.datetime.utcnow().replace(tzinfo=pytz.utc)
-
-            if self.exit_requested:
-                logger.debug('interruptible_wait interrupted after %d seconds',
-                             (dt_now - dt_start).total_seconds())
-                return
-
-
     def wait_till_next_round(self):
         """
         Wait until a new Numerai round is detected. Will wait until 5 minutes
@@ -199,29 +176,24 @@ class Numerauto:
 
         new_round_info = self.napi.get_current_round_details(tournament=self.tournament_id)
 
-        while new_round_info is None and not self.exit_requested:
-            logger.warning('wait_till_next_round: API did not respond to round info request')
-            self.interruptible_wait(60)
-            new_round_info = self.napi.get_current_round_details(tournament=self.tournament_id)
-
         dt_now = datetime.datetime.utcnow().replace(tzinfo=pytz.utc)
         logger.info('Waiting for round %d. Time to next round: %.1f hours',
                     self.persistent_state['last_round_processed'] + 1,
                     (dt_round_close - dt_now).total_seconds() / 3600)
 
         # Loop until the API reports a new round number
-        while new_round_info['number'] == round_info['number'] and not self.exit_requested:
+        while new_round_info['number'] == round_info['number'] and not waiter.exit_requested:
             dt_now = datetime.datetime.utcnow().replace(tzinfo=pytz.utc)
             seconds_wait = (dt_round_close - dt_now).total_seconds() + 5
 
             if seconds_wait > 360:
                 # Wait till 5 minutes before round start
-                self.interruptible_wait(seconds_wait - 360)
+                waiter.wait_until(dt_round_close - datetime.timedelta(minutes=5))
             else:
                 # Then query round information every minute until round has started
-                self.interruptible_wait(min(seconds_wait, 60))
+                waiter.wait(min(seconds_wait, 60))
 
-            if self.exit_requested:
+            if waiter.exit_requested:
                 return None
 
             new_round_info = self.napi.get_current_round_details(tournament=self.tournament_id)
@@ -230,11 +202,6 @@ class Numerauto:
                         'round: %d. Time to next round: %.1f minutes',
                         new_round_info['number'],
                         (dt_round_close - dt_now).total_seconds() / 60)
-
-            while new_round_info is None and not self.exit_requested:
-                logger.warning('wait_till_next_round: API did not respond to round info request')
-                self.interruptible_wait(60)
-                new_round_info = self.napi.get_current_round_details(tournament=self.tournament_id)
 
         return new_round_info
 
@@ -307,7 +274,7 @@ class Numerauto:
         # Download data. If data is not valid, wait 10 minutes and try again.
         valid = self.download_and_check()
 
-        while not valid and not self.exit_requested:
+        while not valid and not waiter.exit_requested:
             logger.info('run_new_round: New dataset is not valid, retrying in 10 minutes')
 
             # Remove downloaded and unzipped files
@@ -316,8 +283,8 @@ class Numerauto:
                 if os.path.isdir(self.dataset_path[:-4]):
                     shutil.rmtree(self.dataset_path[:-4])
 
-            self.interruptible_wait(600)
-            if self.exit_requested:
+            waiter.wait(600)
+            if waiter.exit_requested:
                 return
 
             valid = self.download_and_check()
@@ -372,24 +339,25 @@ class Numerauto:
             pickle.dump(self.persistent_state, fp)
 
 
-    def signalHandler(self, sig, frame):
-        """ SIGINT/SIGTERM handler """
-
-        logger.info('Interrupt received!')
-        self.exit_requested = True
-
 
     # Run Numerauto in daemon mode
-    def run(self):
+    def run(self, single_run=False):
         """
         Start the Numerauto daemon. Will process Numerai rounds until
         interrupted.
+        
+        Args:
+            single_run: Indicates whether this function should only process one
+            round after catching up to the current round. It will exit if the
+            waiting time until the next round exceeds 24 hours. This can be used
+            to start Numerauto from a task scheduler (at most 24 hours before the
+            round start).
         """
         logger.debug('run')
 
         # Set up signal handlers to gracefully exit
-        signal.signal(signal.SIGINT, self.signalHandler)
-        signal.signal(signal.SIGTERM, self.signalHandler)
+        signal.signal(signal.SIGINT, waiter.signal_handler)
+        signal.signal(signal.SIGTERM, waiter.signal_handler)
 
         # Load internal state
         self.load_state()
@@ -407,14 +375,33 @@ class Numerauto:
 
         logger.info('Entering daemon loop')
 
-        while not self.exit_requested:
-            # Wait till next round starts
-            round_info = self.wait_till_next_round()
-            if self.exit_requested:
-                break
+        while not waiter.exit_requested:
+            self.round_number = self.napi.get_current_round()
+            # Check if we didn't already pass into the next round
+            if self.round_number == self.persistent_state['last_round_processed']:
+                # In case of a single run, check whether we're not going to wait
+                # too long (> 24 hours) for the next round
+                if single_run:
+                    round_info = self.napi.get_current_round_details(tournament=self.tournament_id)
+                    
+                    dt_round_close = dateutil.parser.parse(round_info['closeTime'])
+                    dt_now = datetime.datetime.utcnow().replace(tzinfo=pytz.utc)
+                    
+                    if (dt_round_close - dt_now).total_seconds() > 86400:
+                        logger.info('Single run stopping because new round is more than 1 day in the future')
+                        break
+
+                # Wait till next round starts
+                round_info = self.wait_till_next_round()
+                if waiter.exit_requested:
+                    break
 
             self.round_number = round_info['number']
             self.run_new_round()
+            
+            if single_run:
+                # Stop after processing one round
+                break
 
         logger.info('Exiting daemon loop')
 

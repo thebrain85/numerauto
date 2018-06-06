@@ -2,7 +2,6 @@
 Module containing a robust implementation of NumerAPI.
 """
 
-import time
 import logging
 
 import requests
@@ -10,8 +9,10 @@ from requests.exceptions import RequestException
 
 import numerapi
 
+from .utils import Waiter
 
 logger = logging.getLogger(__name__)
+waiter = Waiter()
 
 
 API_TOURNAMENT_URL = 'https://api-tournament.numer.ai'
@@ -76,34 +77,37 @@ class RobustNumerAPI(numerapi.NumerAPI):
         RequestException is intercepted.
         """
 
-        while True:
+        attempt_number = 0
+        while not waiter.exit_requested:
             try:
                 return self.__raw_query_patched(query, variables=variables,
                                                 authorization=authorization)
             except RequestException as e:
                 logger.error('Request failed: %s', e)
-                logger.info('Retrying in 60 seconds')
-                time.sleep(60)
+                waiter.wait_for_retry(attempt_number)
+                attempt_number += 1
 
+                # TODO: Interrupting a failed request will cause an error
+                # because this function returns None and NumerAPI does not like
+                # that...
                 # TODO: See if we need to re-raise some request exceptions
-                # TODO: time.sleep is hard to interrupt
-                # TODO: Allow this loop to exit in some way
 
     def upload_predictions(self, file_path, tournament=1):
         """
         Robust implementation of upload_predictions. Will retry the upload if a
         RequestException is intercepted.
         """
-        while True:
+        
+        attempt_number = 0
+        while not waiter.exit_requested:
             try:
                 return super().upload_predictions(file_path, tournament=tournament)
-            except RequestException:
-                logger.info('Request failed, retrying in 60 seconds')
-                time.sleep(60)
+            except RequestException as e:
+                logger.error('Upload request failed: %s', e)
+                waiter.wait_for_retry(attempt_number)
+                attempt_number += 1
 
                 # TODO: See if we need to re-raise some request exceptions
-                # TODO: time.sleep is hard to interrupt
-                # TODO: Allow this loop to exit in some way
 
     def get_current_round_details(self, tournament=1):
         """
@@ -131,6 +135,6 @@ class RobustNumerAPI(numerapi.NumerAPI):
         #       Ideally we don't want it to do so
         if raw is None:
             logger.error('get_current_round_details returned None')
-            return None
+            raise RuntimeError('get_current_round_details returned None')
 
         return raw['data']['rounds'][0]

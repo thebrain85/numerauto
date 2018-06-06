@@ -77,7 +77,7 @@ class SKLearnModelTrainer(EventHandler):
     directory.
     """
 
-    def __init__(self, name, model_factory):
+    def __init__(self, name, model_factory, tournament_id=None):
         """
         Creates a new SKLearnModelTrainer instance.
 
@@ -85,40 +85,58 @@ class SKLearnModelTrainer(EventHandler):
             name: Event handler name.
             model_factory: Function that creates a new model instance.
                            The function must take no arguments.
+            tournament_id: ID of the tournament to upload predictions to. The default None will copy the tournament id of the Numerauto instance
         """
 
         super().__init__(name)
         self.model_factory = model_factory
+        self.tournament_id = tournament_id
 
     def on_new_training_data(self, round_number):
+        # Get tournament name
+        napi = RobustNumerAPI()
+        if self.tournament_id is None:
+            self.tournament_id = self.numerauto.tournament_id
+        tournament_name = napi.tournament_number2name(self.tournament_id)
+      
         train_x = pd.read_csv(self.numerauto.get_dataset_path(round_number) / 'numerai_training_data.csv', header=0)
+        target_columns = set([x for x in list(train_x) if x[0:7] == 'target_'])
 
-        train_y = train_x['target'].as_matrix()
-        train_x = train_x.drop({'id', 'target', 'era', 'data_type'}, axis=1).as_matrix()
+        train_y = train_x['target_{}'.format(tournament_name)].as_matrix()
+        train_x = train_x.drop({'id', 'era', 'data_type'} | target_columns, axis=1).as_matrix()
 
-        logger.info('SKLearnModelTrainer(%s): Fitting model for round %d', self.name, round_number)
+        logger.info('SKLearnModelTrainer(%s): Fitting model for tournament %s round %d',
+                    self.name, tournament_name, round_number)
         model = self.model_factory()
         model.fit(train_x, train_y)
 
-        ensure_directory_exists(Path('./models/round_{}'.format(round_number)))
-        model_filename = Path('./models/round_{}/{}.p'.format(round_number, self.name))
+        ensure_directory_exists(Path('./models/tournament_{}/round_{}'.format(tournament_name, round_number)))
+        model_filename = Path('./models/tournament_{}/round_{}/{}.p'.format(tournament_name, round_number, self.name))
         pickle.dump(model, open(model_filename, 'wb'))
 
     def on_new_tournament_data(self, round_number):
-        test_x = pd.read_csv(self.numerauto.get_dataset_path(round_number) / 'numerai_tournament_data.csv', header=0)
-        test_ids = test_x['id']
-        test_x = test_x.drop({'id', 'target', 'era', 'data_type'}, axis=1).as_matrix()
+        # Get tournament name
+        napi = RobustNumerAPI()
+        if self.tournament_id is None:
+            self.tournament_id = self.numerauto.tournament_id
+        tournament_name = napi.tournament_number2name(self.tournament_id)
 
-        logger.info('SKLearnModelTrainer(%s): Applying model for round %d',
-                    self.name, round_number)
-        model_filename = Path('./models/round_{}/{}.p'.format(
-            self.numerauto.persistent_state['last_round_trained'], self.name))
+        test_x = pd.read_csv(self.numerauto.get_dataset_path(round_number) / 'numerai_tournament_data.csv', header=0)
+        target_columns = set([x for x in list(test_x) if x[0:7] == 'target_'])
+        
+        test_ids = test_x['id']
+        test_x = test_x.drop({'id', 'era', 'data_type'} | target_columns, axis=1).as_matrix()
+
+        logger.info('SKLearnModelTrainer(%s): Applying model for tournament %s round %d',
+                    self.name, tournament_name, round_number)
+        model_filename = Path('./models/tournament_{}/round_{}/{}.p'.format(
+            tournament_name, self.numerauto.persistent_state['last_round_trained'], self.name))
         model = pickle.load(open(model_filename, 'rb'))
         predictions = model.predict_proba(test_x)[:, 1]
 
-        df = pd.DataFrame(predictions, columns=['probability'], index=test_ids)
-        ensure_directory_exists(Path('./predictions/round_{}'.format(round_number)))
-        df.to_csv(Path('./predictions/round_{}/{}.csv'.format(round_number, self.name)),
+        df = pd.DataFrame(predictions, columns=['probability_{}'.format(tournament_name)], index=test_ids)
+        ensure_directory_exists(Path('./predictions/tournament_{}/round_{}'.format(tournament_name, round_number)))
+        df.to_csv(Path('./predictions/tournament_{}/round_{}/{}.csv'.format(tournament_name, round_number, self.name)),
                   index_label='id', float_format='%.8f')
 
 
@@ -128,7 +146,7 @@ class PredictionUploader(EventHandler):
     using the Numerai API.
     """
 
-    def __init__(self, name, filename, public_id, secret_key):
+    def __init__(self, name, filename, public_id, secret_key, tournament_id=None):
         """
         Creates a new PredictionUploader instance.
 
@@ -137,22 +155,31 @@ class PredictionUploader(EventHandler):
             filename: Filename of the predictions file.
             public_id: Numerai public API key for the account the prediction is uploaded to.
             secret_key: Numerai secret API key for the account the prediction is uploaded to.
+            tournament_id: ID of the tournament to upload predictions to. The default None will copy the tournament id of the Numerauto instance
         """
         super().__init__(name)
         self.filename = filename
         self.public_id = public_id
         self.secret_key = secret_key
+        self.tournament_id = tournament_id
+
 
     def on_new_tournament_data(self, round_number):
         logger.info('PredictionUploader(%s): Uploading predictions for round %d: %s',
                     self.name, round_number, self.filename)
         napi = RobustNumerAPI(public_id=self.public_id, secret_key=self.secret_key)
+        
+        # Get tournament name
+        if self.tournament_id is None:
+            self.tournament_id = self.numerauto.tournament_id
+        tournament_name = napi.tournament_number2name(self.tournament_id)
+        
         try:
-            prediction_path = Path('./predictions/round_{}/'.format(round_number))
+            prediction_path = Path('./predictions/tournament_{}/round_{}/'.format(tournament_name, round_number))
             napi.upload_predictions(prediction_path / self.filename)
         except NumerAPIError as e:
-            logger.error('PredictionUploader(%s): NumerAPI exception in round %d: %s',
-                         self.name, round_number, e)
+            logger.error('PredictionUploader(%s): NumerAPI exception in tournament %s round %d: %s',
+                         self.name, tournament_name, round_number, e)
             logger.error('PredictionUploader(%s): Predictions not uploaded successfully, '
                          'please upload %s manually, or remove state.pickle and restart '
-                         'Numerauto to process this round again', prediction_path / self.filename)
+                         'Numerauto to process this round again', self.name, prediction_path / self.filename)
