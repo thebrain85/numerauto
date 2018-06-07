@@ -2,6 +2,7 @@
 Numerauto event handlers module
 """
 
+import os
 from pathlib import Path
 import pickle
 import logging
@@ -72,9 +73,11 @@ class SKLearnModelTrainer(EventHandler):
     The model must implement the 'fit' and 'predict_proba' methods, and must be
     able to be written to file using pickle.
 
-    Each time the model is trained, it is saved to the ./models directory.
+    Each time the model is trained, it is saved to the ./models directory:
+        ./models/tournament_<name>/round_<num>/<name>.p
     Each time the model is applied, predictions are written to the ./predictions
-    directory.
+    directory:
+        ./predictions/tournament_<name>/round_<num>/<name>.csv
     """
 
     def __init__(self, name, model_factory, tournament_id=None):
@@ -102,7 +105,7 @@ class SKLearnModelTrainer(EventHandler):
         train_x = pd.read_csv(self.numerauto.get_dataset_path(round_number) / 'numerai_training_data.csv', header=0)
         target_columns = set([x for x in list(train_x) if x[0:7] == 'target_'])
 
-        train_y = train_x['target_{}'.format(tournament_name)].as_matrix()
+        train_y = train_x['target_' + tournament_name].as_matrix()
         train_x = train_x.drop({'id', 'era', 'data_type'} | target_columns, axis=1).as_matrix()
 
         logger.info('SKLearnModelTrainer(%s): Fitting model for tournament %s round %d',
@@ -134,7 +137,7 @@ class SKLearnModelTrainer(EventHandler):
         model = pickle.load(open(model_filename, 'rb'))
         predictions = model.predict_proba(test_x)[:, 1]
 
-        df = pd.DataFrame(predictions, columns=['probability_{}'.format(tournament_name)], index=test_ids)
+        df = pd.DataFrame(predictions, columns=['probability_' + tournament_name], index=test_ids)
         ensure_directory_exists(Path('./predictions/tournament_{}/round_{}'.format(tournament_name, round_number)))
         df.to_csv(Path('./predictions/tournament_{}/round_{}/{}.csv'.format(tournament_name, round_number, self.name)),
                   index_label='id', float_format='%.8f')
@@ -176,10 +179,52 @@ class PredictionUploader(EventHandler):
         
         try:
             prediction_path = Path('./predictions/tournament_{}/round_{}/'.format(tournament_name, round_number))
-            napi.upload_predictions(prediction_path / self.filename)
+            napi.upload_predictions(prediction_path / self.filename, tournament=self.tournament_id)
         except NumerAPIError as e:
             logger.error('PredictionUploader(%s): NumerAPI exception in tournament %s round %d: %s',
                          self.name, tournament_name, round_number, e)
             logger.error('PredictionUploader(%s): Predictions not uploaded successfully, '
                          'please upload %s manually, or remove state.pickle and restart '
                          'Numerauto to process this round again', self.name, prediction_path / self.filename)
+
+
+
+class CommandlineExecutor(EventHandler):
+    """
+    Event handler that executes a command line on new training and/or tournament
+    data.
+    """
+
+    def __init__(self, name, on_new_training_commandline=None, on_new_tournament_commandline=None):
+        """
+        Creates a new CommandlineExecutor instance.
+        The command lines provided in the arguments will have the substring
+        %round% replaced by the current round number and %dataset_path% by the
+        full path to the new unzipped dataset.
+
+        Args:
+            name: Event handler name.
+            on_new_training_commandline: Command line to execute when new training data is available.
+            on_new_tournament_commandline: Command line to execute when new tournament data is available.
+        """
+        super().__init__(name)
+        self.on_new_training_commandline = on_new_training_commandline
+        self.on_new_tournament_commandline = on_new_tournament_commandline
+
+    def on_new_training_data(self, round_number):
+        if self.on_new_training_commandline:
+            cmdline = self.on_new_training_commandline
+            cmdline = cmdline.replace('%round%', str(round_number))
+            cmdline = cmdline.replace('%dataset_path%', str(self.numerauto.get_dataset_path(round_number).absolute()))
+
+            logger.info('CommandlineExecutor(%s): Executing command: %s', self.name, cmdline)
+            os.system(cmdline)
+        
+    def on_new_tournament_data(self, round_number):
+        if self.on_new_tournament_commandline:
+            cmdline = self.on_new_tournament_commandline
+            cmdline = cmdline.replace('%round%', str(round_number))
+            cmdline = cmdline.replace('%dataset_path%', str(self.numerauto.get_dataset_path(round_number).absolute()))
+            
+            logger.info('CommandlineExecutor(%s): Executing command: %s', self.name, cmdline)
+            os.system(cmdline)
