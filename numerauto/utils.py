@@ -6,7 +6,6 @@ import os
 import logging
 import time
 import datetime
-import signal
 
 import pandas
 import pytz

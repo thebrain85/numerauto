@@ -403,6 +403,7 @@ class Numerauto:
     
                 if single_run:
                     # Stop after processing one round
+                    logger.info('Exiting daemon loop because of single_run')
                     break
         except InterruptedException:
             logger.info('Exiting daemon loop because of interrupt')

@@ -5,7 +5,7 @@ from setuptools import find_packages
 with open('README.md') as f:
     long_description = f.read()
 
-numerauto_version = '0.1.1dev'
+numerauto_version = '0.2.0'
 
 
 classifiers = [
@@ -32,7 +32,7 @@ if __name__ == "__main__":
         platforms="OS Independent",
         classifiers=classifiers,
         license='GNU General Public License v3',
-        package_data={'numerauto': ['LICENSE', 'README.md']},
+        package_data={'numerauto': ['LICENSE', 'README.md', 'CHANGELOG.md']},
         packages=find_packages(),
         python_requires='>=3',
         install_requires=["requests", "pytz", "python-dateutil", "pandas", "numerapi"]
