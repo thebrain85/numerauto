@@ -9,10 +9,9 @@ from requests.exceptions import RequestException
 
 import numerapi
 
-from .utils import Waiter
+from .utils import wait_for_retry
 
 logger = logging.getLogger(__name__)
-waiter = Waiter()
 
 
 API_TOURNAMENT_URL = 'https://api-tournament.numer.ai'
@@ -78,18 +77,15 @@ class RobustNumerAPI(numerapi.NumerAPI):
         """
 
         attempt_number = 0
-        while not waiter.exit_requested:
+        while True:
             try:
                 return self.__raw_query_patched(query, variables=variables,
                                                 authorization=authorization)
             except RequestException as e:
                 logger.error('Request failed: %s', e)
-                waiter.wait_for_retry(attempt_number)
+                wait_for_retry(attempt_number)
                 attempt_number += 1
 
-                # TODO: Interrupting a failed request will cause an error
-                # because this function returns None and NumerAPI does not like
-                # that...
                 # TODO: See if we need to re-raise some request exceptions
 
     def upload_predictions(self, file_path, tournament=1):
@@ -99,12 +95,12 @@ class RobustNumerAPI(numerapi.NumerAPI):
         """
         
         attempt_number = 0
-        while not waiter.exit_requested:
+        while True:
             try:
                 return super().upload_predictions(file_path, tournament=tournament)
             except RequestException as e:
                 logger.error('Upload request failed: %s', e)
-                waiter.wait_for_retry(attempt_number)
+                wait_for_retry(attempt_number)
                 attempt_number += 1
 
                 # TODO: See if we need to re-raise some request exceptions

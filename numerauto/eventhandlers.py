@@ -101,7 +101,7 @@ class SKLearnModelTrainer(EventHandler):
         if self.tournament_id is None:
             self.tournament_id = self.numerauto.tournament_id
         tournament_name = napi.tournament_number2name(self.tournament_id)
-      
+
         train_x = pd.read_csv(self.numerauto.get_dataset_path(round_number) / 'numerai_training_data.csv', header=0)
         target_columns = set([x for x in list(train_x) if x[0:7] == 'target_'])
 
@@ -126,7 +126,7 @@ class SKLearnModelTrainer(EventHandler):
 
         test_x = pd.read_csv(self.numerauto.get_dataset_path(round_number) / 'numerai_tournament_data.csv', header=0)
         target_columns = set([x for x in list(test_x) if x[0:7] == 'target_'])
-        
+
         test_ids = test_x['id']
         test_x = test_x.drop({'id', 'era', 'data_type'} | target_columns, axis=1).as_matrix()
 
@@ -171,12 +171,12 @@ class PredictionUploader(EventHandler):
         logger.info('PredictionUploader(%s): Uploading predictions for round %d: %s',
                     self.name, round_number, self.filename)
         napi = RobustNumerAPI(public_id=self.public_id, secret_key=self.secret_key)
-        
+
         # Get tournament name
         if self.tournament_id is None:
             self.tournament_id = self.numerauto.tournament_id
         tournament_name = napi.tournament_number2name(self.tournament_id)
-        
+
         try:
             prediction_path = Path('./predictions/tournament_{}/round_{}/'.format(tournament_name, round_number))
             napi.upload_predictions(prediction_path / self.filename, tournament=self.tournament_id)
@@ -219,12 +219,12 @@ class CommandlineExecutor(EventHandler):
 
             logger.info('CommandlineExecutor(%s): Executing command: %s', self.name, cmdline)
             os.system(cmdline)
-        
+
     def on_new_tournament_data(self, round_number):
         if self.on_new_tournament_commandline:
             cmdline = self.on_new_tournament_commandline
             cmdline = cmdline.replace('%round%', str(round_number))
             cmdline = cmdline.replace('%dataset_path%', str(self.numerauto.get_dataset_path(round_number).absolute()))
-            
+
             logger.info('CommandlineExecutor(%s): Executing command: %s', self.name, cmdline)
             os.system(cmdline)

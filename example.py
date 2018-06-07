@@ -13,7 +13,7 @@ import sys
 from sklearn.linear_model import LogisticRegression
 
 from numerauto import Numerauto
-from numerauto.eventhandlers import SKLearnModelTrainer, PredictionUploader, CommandlineExecutor
+from numerauto.eventhandlers import SKLearnModelTrainer, PredictionUploader
 
 
 # Set up logging to file and stdout

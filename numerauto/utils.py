@@ -70,79 +70,51 @@ def check_dataset(filename_old, filename_new, data_type=None):
     return False
 
 
-class Waiter:
-    """
-    Class that implements globally interruptable waiting and exit handling.
-    """
-    
-    __instance = None
-    def __new__(cls):
-        """
-        Override __new__ to use a Singleton pattern.
-        """
-        if Waiter.__instance is None:
-            Waiter.__instance = object.__new__(cls)
-            signal.signal(signal.SIGINT, Waiter.__instance.signal_handler)
-        return Waiter.__instance
-    
-    def __init__(self):
-        self.exit_requested = False
-        
-    def wait(self, seconds):
-        """
-        Helper function that waits for a given number of seconds while checking
-        the exit_requested attribute. If exit_requested is set to True, this
-        function will return.
-    
-        Args:
-            seconds: Number of seconds to wait.
-        """
-        
-        logger.debug('wait(%d)', seconds)
-        dt_now = datetime.datetime.utcnow().replace(tzinfo=pytz.utc) + datetime.timedelta(seconds=seconds)
-        self.wait_until(dt_now)
 
-    def wait_until(self, timestamp):
-        """
-        Helper function that waits until a given datetime timestamp is reached,
-        while checking the exit_requested attribute. If exit_requested is set
-        to True, this function will return.
+def wait(seconds):
+    """
+    Helper function that waits for a given number of seconds while checking
+    the exit_requested attribute. If exit_requested is set to True, this
+    function will return.
+
+    Args:
+        seconds: Number of seconds to wait.
+    """
+
+    logger.debug('wait(%d)', seconds)
+    dt_now = datetime.datetime.utcnow().replace(tzinfo=pytz.utc) + datetime.timedelta(seconds=seconds)
+    wait_until(dt_now)
     
-        Args:
-            timestamp: datetime object indicating the date and time that should
-                       be waited until.
-        """
-        logger.debug('wait_until(%s)', timestamp)
+
+def wait_until(timestamp):
+    """
+    Helper function that waits until a given datetime timestamp is reached,
+    while checking the exit_requested attribute. If exit_requested is set
+    to True, this function will return.
+
+    Args:
+        timestamp: datetime object indicating the date and time that should
+                   be waited until.
+    """
+    logger.debug('wait_until(%s)', timestamp)
+    dt_now = datetime.datetime.utcnow().replace(tzinfo=pytz.utc)
+
+    while (timestamp - dt_now).total_seconds() > 0:
+        time.sleep(min(1,(timestamp - dt_now).total_seconds()))
         dt_now = datetime.datetime.utcnow().replace(tzinfo=pytz.utc)
 
-        while (timestamp - dt_now).total_seconds() > 0:
-            time.sleep(min(1,(timestamp - dt_now).total_seconds()))
-            dt_now = datetime.datetime.utcnow().replace(tzinfo=pytz.utc)
-    
-            if self.exit_requested:
-                logger.debug('wait_until interrupted with %d seconds left',
-                             (timestamp - dt_now).total_seconds())
-                return
-    
-    def wait_for_retry (self, attempt_number):
-        logger.debug('wait_for_retry(%d)', attempt_number)
-        
-        # Hardcoded retry schedule:
-        # 5x 1 minute
-        # 3x 10 minutes
-        # 3x 1 hour
-        # Fail afterwards (3 hours 35 minutes of retrying)
-        waiting_schedule = [60, 60, 60, 60, 60, 600, 600, 600, 3600, 3600, 3600]
-        
-        if attempt_number >= len(waiting_schedule):
-            raise RuntimeError('Request failed too many times')
-        
-        self.wait(waiting_schedule[attempt_number])
-        
-        
-        
-    def signal_handler(self, sig, frame):
-        """ SIGINT/SIGTERM handler """
-    
-        logger.info('Signal received!')
-        self.exit_requested = True
+
+def wait_for_retry(attempt_number):
+    logger.debug('wait_for_retry(%d)', attempt_number)
+
+    # Hardcoded retry schedule:
+    # 5x 1 minute
+    # 3x 10 minutes
+    # 3x 1 hour
+    # Fail afterwards (3 hours 35 minutes of retrying)
+    waiting_schedule = [60, 60, 60, 60, 60, 600, 600, 600, 3600, 3600, 3600]
+
+    if attempt_number >= len(waiting_schedule):
+        raise RuntimeError('Request failed too many times')
+
+    wait(waiting_schedule[attempt_number])
