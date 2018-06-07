@@ -72,6 +72,6 @@ na.add_event_handler(PredictionUploader('logistic_regression_uploader5',
                                         'insert your secretkey here',
                                         tournament_id=5))
 try:
-    na.run(single_run=True)
+    na.run()
 except Exception as e:
     logging.exception(e)

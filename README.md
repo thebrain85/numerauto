@@ -13,11 +13,15 @@ If you encounter a problem or have suggestions, feel free to open an issue.
 
 # Installation
 To install the latest release:
+
 `pip install --upgrade numerauto`
 
 If you prefer to use the latest development version, clone this github reposistory:
+
 `git clone https://github.com/thebrain85/numerauto`
+
 And then run the following command in the numerauto directory.
+
 `python setup.py install`
 
 
@@ -38,14 +42,18 @@ This can be done in Account settings -> Your API Keys -> Add. Select
 'insert your publickey/secretkey here' in the code with your own API public/secret
 API key pair to allow the example code to upload the prediction to your account.
 
+See `example2.py` for an example that uses the `CommandlineExecutor` event
+handler to call a custom commandline once a new round is detected. You can
+modify the command line to execute your own code, e.g. `python myscript.py`,
+like you would do manually. This is an easy and quick way to make use of
+Numerauto's automatic detection of new rounds in Numerai.
+
 ## Custom event handlers
 Implementing your own event handler is easy. Simply create a subclass of
 numerauto.eventhandlers.EventHandler and overload the on_* methods that you
 need to implement your own functionality. The event handler can then be added
 to a Numerauto instance using the `add_event_handler` method. Then start the
-main loop of the Numerauto daemon by calling the `run` method. Note that this
-will keep running indefinitely or until interrupted using a SIGINT (ctrl-c) or
-SIGTERM signal.
+main loop of the Numerauto daemon by calling the `run` method.
 
 Currently these events are supported:
 - `def on_start(self)`: Called when the daemon starts.
@@ -61,6 +69,21 @@ interact with one another, or that keep large amounts of data in memory.
 Ideally, the handler should clean up memory in `on_new_tournament_data` to
 prevent memory being used while the daemon is idle and waiting for the next
 round.
+
+## Running Numerauto
+By default, the `run` method of Numerauto will keep running indefinitely until
+interrupted using a SIGINT (ctrl-c) or SIGTERM signal. This way, you only have
+to start your Numerauto script once, for example on startup, or running inside
+[screen](https://www.gnu.org/software/screen/manual/screen.html) on linux.
+`example.py` runs Numerauto this way.
+
+Alternatively, you can provide the argument `single_run` to the `run` method of
+Numerauto. This will cause Numerauto to only wait once for a new round (and with
+a maximum of 24 hours). This is ideally suited for calling Numerauto from a
+task scheduler, such as cron on Linux or the Windows Task Scheduler. Make sure
+you schedule Numerauto to run a little before the official round start time,
+it will wait and run as soon as the dataset is available.
+`example2.py` runs Numerauto this way.
 
 ## Persistent state: state.pickle
 
