@@ -135,6 +135,9 @@ class SKLearnModelTrainer(EventHandler):
         ensure_directory_exists(self.numerauto.config['model_directory'] / 'tournament_{}/round_{}'.format(tournament_name, round_number))
         model_filename = self.numerauto.config['model_directory'] / 'tournament_{}/round_{}/{}.p'.format(tournament_name, round_number, self.name)
         pickle.dump(model, open(model_filename, 'wb'))
+        
+        self.numerauto.report['training'][tournament_name][self.name]['filename'] = model_filename
+
 
     def on_new_tournament_data(self, round_number):
         tournament_name = self.numerauto.tournaments[self.tournament_id]

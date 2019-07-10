@@ -86,7 +86,6 @@ it will wait and run as soon as the dataset is available.
 `example2.py` runs Numerauto this way.
 
 ## Persistent state: state.pickle
-
 Numerauto stores a persistent state in the `state.pickle` file in the directory
 from which the daemon is being run. By default, the Numerauto daemon stores
 the last round number that was processed (`last_round_processed`) and the last
@@ -96,3 +95,14 @@ the state.pickle file.
 
 Custom event handlers can store persistent information in the `persistent_state`
 dictionary of the Numerauto instance.
+
+## Round report
+Event handlers have access to a special dictionary in the numerauto instance
+via `self.numerauto.report`. This dictionary is reset every round and can be
+used to report values that are relevant to the event handler. For example,
+`SKLearnModelTrainer` reports back the filenames of the trained model (if
+applicable) and the generated predictions, and `PredictionStatisticsGenerator`
+reports the validation metrics of a prediction.
+
+The report can be written to file every round with `BasicReportWriter`, or
+emailed with `BasicReportEmailer`, both using only simple formatting.
