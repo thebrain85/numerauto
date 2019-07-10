@@ -304,7 +304,13 @@ class PredictionStatisticsGenerator(EventHandler):
     def on_start(self):
         if self.tournament_id is None:
             self.tournament_id = self.numerauto.tournament_id
-        
+
+        if 'prediction_directory' not in self.numerauto.config:
+            self.numerauto.config['prediction_directory'] = './predictions'
+
+        # Turn prediction directory in pathlib Path
+        self.numerauto.config['prediction_directory'] = Path(self.numerauto.config['prediction_directory'])
+
     def on_new_tournament_data(self, round_number):
         tournament_name = self.numerauto.tournaments[self.tournament_id]
 
