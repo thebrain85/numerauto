@@ -10,7 +10,7 @@ import collections
 import smtplib
 
 import pandas as pd
-from sklearn.metrics import log_loss
+from scipy.stats import spearmanr
 
 from numerapi.utils import ensure_directory_exists
 from .robust_numerapi import RobustNumerAPI, NumerAPIError
@@ -78,7 +78,7 @@ class EventHandler:
 class SKLearnModelTrainer(EventHandler):
     """
     Event handler that trains and applies models that adhere to the sklearn API.
-    The model must implement the 'fit' and 'predict_proba' methods, and must be
+    The model must implement the 'fit' and 'predict' methods, and must be
     able to be written to file using pickle.
 
     Each time the model is trained, it is saved to the
@@ -150,9 +150,9 @@ class SKLearnModelTrainer(EventHandler):
         model_filename = self.numerauto.config['model_directory'] / 'tournament_{}/round_{}/{}.p'.format(
             tournament_name, self.numerauto.persistent_state['last_round_trained'], self.name)
         model = pickle.load(open(model_filename, 'rb'))
-        predictions = model.predict_proba(test_x)[:, 1]
+        predictions = model.predict(test_x)
 
-        df = pd.DataFrame(predictions, columns=['probability_' + tournament_name], index=test_ids)
+        df = pd.DataFrame(predictions, columns=['predict_' + tournament_name], index=test_ids)
         ensure_directory_exists(self.numerauto.config['prediction_directory'] / 'tournament_{}/round_{}'.format(tournament_name, round_number))
         df.to_csv(self.numerauto.config['prediction_directory'] / 'tournament_{}/round_{}/{}.csv'.format(tournament_name, round_number, self.name),
                   index_label='id', float_format='%.8f')
@@ -217,22 +217,19 @@ class PredictionUploader(EventHandler):
 
                 attempts = 0
                 while status['concordance'] is None or \
-                      status['concordance']['pending'] or \
-                      status['originality'] is None or \
-                      status['originality']['pending']:
+                      status['concordance']['pending']:
                     wait_for_retry(attempts, self.numerauto.config['upload_verify_wait_schedule'])
                     attempts += 1
                     status = napi.submission_status(submission_id=submission_id)
                 
-                logger.info('PredictionUploader(%s): Upload verified: Logloss: %.4f Consistency: %.1f Originality: %r Concordance: %r',
-                            self.name, status['validation_logloss'], status['consistency'], status['originality']['value'], status['concordance']['value'])
+                logger.info('PredictionUploader(%s): Upload verified: Correlation: %.4f Consistency: %.1f Concordance: %r',
+                            self.name, status['validationCorrelation'], status['consistency'], status['concordance']['value'])
                 
                 self.numerauto.report['submissions'][tournament_name][self.filename] = {
                         'submission_id': submission_id,
                         'filename': prediction_path / self.filename,
-                        'validation_logloss': status['validation_logloss'],
+                        'validationCorrelation': status['validationCorrelation'],
                         'consistency': status['consistency'],
-                        'originality': status['originality']['value'],
                         'concordance': status['concordance']['value']}
             else:
                 self.numerauto.report['submissions'][tournament_name][self.filename] = {
@@ -291,6 +288,11 @@ class CommandlineExecutor(EventHandler):
 
 
 class PredictionStatisticsGenerator(EventHandler):
+    """
+    Event handler that generates statistics for a given prediction filename and
+    stores them in the numerauto report dictionary.
+    """
+    
     def __init__(self, name, filename, tournament_id=None):
         super().__init__(name)
         self.filename = filename
@@ -315,17 +317,21 @@ class PredictionStatisticsGenerator(EventHandler):
         
         consistency = 0
         for e in val_eras:
-            d['validation_logloss'][e] = log_loss(test_df[test_df['era'] == e]['target_' + tournament_name],
-                                                  p_df[test_df['era'] == e]['probability_' + tournament_name])
-            consistency += d['validation_logloss'][e] <= 0.693
+            d['validationCorrelation'][e] = spearmanr(test_df[test_df['era'] == e]['target_' + tournament_name],
+                                                  p_df[test_df['era'] == e]['predict_' + tournament_name])[0]
+            consistency += d['validationCorrelation'][e] > 0
 
-        d['validation_logloss']['overall'] = log_loss(test_df[test_df['data_type'] == 'validation']['target_' + tournament_name],
-                                                      p_df[test_df['data_type'] == 'validation']['probability_' + tournament_name])
+        d['validationCorrelation']['overall'] = spearmanr(test_df[test_df['data_type'] == 'validation']['target_' + tournament_name],
+                                                      p_df[test_df['data_type'] == 'validation']['predict_' + tournament_name])[0]
         d['consistency'] = consistency / len(val_eras)
 
 
 
 class BasicReportWriter(EventHandler):
+    """
+    Event handler that writes the numerauto report dictionary to a basic report
+    file.
+    """
     
     def on_start(self):
         if 'report_directory' not in self.numerauto.config:
@@ -355,6 +361,10 @@ class BasicReportWriter(EventHandler):
 
 
 class BasicReportEmailer(EventHandler):
+    """
+    Event handler that emails the numerauto report dictionary as an email with
+    simple formatting.
+    """
     
     def __init__(self, name, smtp_server, smtp_port, smtp_user, smtp_password, email_from, email_to, smtp_tls=True):
         super().__init__(name)

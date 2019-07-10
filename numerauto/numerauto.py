@@ -60,7 +60,7 @@ class Numerauto:
         config: Dictionary that contains all Numerauto configuration entries
     """
 
-    def __init__(self, tournament_id=1, config={}):
+    def __init__(self, tournament_id=8, config={}):
         """
         Creates a Numerauto instance.
 
@@ -323,7 +323,7 @@ class Numerauto:
             logger.info('Downloading dataset')
             dataset_path = self.napi.download_current_dataset(dest_path=self.config['data_directory'],
                                                                    unzip=True,
-                                                                   tournament=self.tournament_id)
+                                                                   tournament=1) # Was self.tournament_id, did not appear to work
 
             filename_old = self.get_dataset_path(self.round_number - 1) / 'numerai_tournament_data.csv'
             filename_new = self.get_dataset_path(self.round_number) / 'numerai_tournament_data.csv'

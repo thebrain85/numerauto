@@ -1,7 +1,7 @@
 """
 Basic Numerauto example.
 
-Trains, applies and uploads a logistic regression model.
+Trains, applies and uploads a linear regression model.
 
 Note: Replace publickey and secretkey with your own API keys to prevent a
 NumerAPIAuthorizationError.
@@ -10,67 +10,48 @@ NumerAPIAuthorizationError.
 import logging
 import sys
 
-from sklearn.linear_model import LogisticRegression
+from sklearn.linear_model import LinearRegression
 
 from numerauto import Numerauto
 from numerauto.eventhandlers import SKLearnModelTrainer, PredictionUploader
+from numerauto.eventhandlers import PredictionStatisticsGenerator, BasicReportWriter, BasicReportEmailer
 
 
 # Set up logging to file and stdout
 log_format = "%(asctime)s [%(levelname)8s] %(name)s: %(message)s"
+fh = logging.FileHandler('numerauto.log')
+fh.setLevel(logging.INFO)
 logging.basicConfig(format=log_format, level=logging.DEBUG,
                     handlers=[logging.FileHandler('debug.log'),
+                              fh,
                               logging.StreamHandler(sys.stdout)])
 
 # Create Numerauto instance and add event handlers
 # Note that the event handlers are processed in the order they are added
 na = Numerauto()
 
-# Model trainers: One for each tournament ID
-# The tournament ID defaults to that of the Numerauto instance (which defaults to 1)
+# Model trainer
+# The tournament ID defaults to that of the Numerauto instance (which defaults to 8)
 
 # Models are stored in ./models/tournament_<name>/round_<num>/<name>.p
 # Predictions are stored in ./predictions/tournament_<name>/round_<num>/<name>.csv
-na.add_event_handler(SKLearnModelTrainer('logistic_regression1',
-                                         lambda: LogisticRegression()))
-na.add_event_handler(SKLearnModelTrainer('logistic_regression2',
-                                         lambda: LogisticRegression(),
-                                         tournament_id=2))
-na.add_event_handler(SKLearnModelTrainer('logistic_regression3',
-                                         lambda: LogisticRegression(),
-                                         tournament_id=3))
-na.add_event_handler(SKLearnModelTrainer('logistic_regression4',
-                                         lambda: LogisticRegression(),
-                                         tournament_id=4))
-na.add_event_handler(SKLearnModelTrainer('logistic_regression5',
-                                         lambda: LogisticRegression(),
-                                         tournament_id=5))
+na.add_event_handler(SKLearnModelTrainer('linear_regression',
+                                         lambda: LinearRegression()))
 
-# Prediction uploaders: One for each tournament
-na.add_event_handler(PredictionUploader('logistic_regression_uploader1',
-                                        'logistic_regression1.csv',
+# Generate statistics for the prediction in the numerauto report dictionary
+na.add_event_handler(PredictionStatisticsGenerator('gen1', 'linear_regression.csv'))
+
+# Prediction uploader
+na.add_event_handler(PredictionUploader('linear_regression_uploader',
+                                        'linear_regression.csv',
                                         'insert your publickey here',
                                         'insert your secretkey here'))
-na.add_event_handler(PredictionUploader('logistic_regression_uploader2',
-                                        'logistic_regression2.csv',
-                                        'insert your publickey here',
-                                        'insert your secretkey here',
-                                        tournament_id=2))
-na.add_event_handler(PredictionUploader('logistic_regression_uploader3',
-                                        'logistic_regression3.csv',
-                                        'insert your publickey here',
-                                        'insert your secretkey here',
-                                        tournament_id=3))
-na.add_event_handler(PredictionUploader('logistic_regression_uploader4',
-                                        'logistic_regression4.csv',
-                                        'insert your publickey here',
-                                        'insert your secretkey here',
-                                        tournament_id=4))
-na.add_event_handler(PredictionUploader('logistic_regression_uploader5',
-                                        'logistic_regression5.csv',
-                                        'insert your publickey here',
-                                        'insert your secretkey here',
-                                        tournament_id=5))
+
+# Report handlers: Write a simple report to file and email it
+na.add_event_handler(BasicReportWriter('writer'))
+na.add_event_handler(BasicReportEmailer('emailer', 'smtp.gmail.com', 587, 'user', 'api-key', 'from@email', 'to@email'))
+
+
 try:
     na.run()
 except Exception as e:

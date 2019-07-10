@@ -1,4 +1,8 @@
 # Changelog
+
+- v0.3.1
+    * Added support for the new kazutsugi tournament
+
 - v0.3.0
     * Added configuration entries to the Numerauto class to allow changing certain constants
     * Added report structure to Numerauto that allows event handlers to report back values, which can be written to a report file or emailed.
