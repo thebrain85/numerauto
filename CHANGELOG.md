@@ -1,4 +1,10 @@
 # Changelog
+- v0.3.0
+    * Added configuration entries to the Numerauto class to allow changing certain constants
+    * Added report structure to Numerauto that allows event handlers to report back values, which can be written to a report file or emailed.
+    * Numerauto now checks for changes in round close time, which should allow it to detect delays in round start time
+    * Various bug fixes
+
 - v0.2.0
     * Modified event handlers to support multiple tournaments.
     * Improved handling of API failures (will now follow a schedule with increasing wait times after repeated failures).

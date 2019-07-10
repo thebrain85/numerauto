@@ -5,7 +5,7 @@ from setuptools import find_packages
 with open('README.md') as f:
     long_description = f.read()
 
-numerauto_version = '0.2.0'
+numerauto_version = '0.3.0dev'
 
 
 classifiers = [

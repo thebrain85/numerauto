@@ -39,7 +39,20 @@ class RobustNumerAPI(numerapi.NumerAPI):
 
     Checks for failure of requests and retries the requests until they succeed.
     """
-
+    
+    def __init__(self, public_id=None, secret_key=None, verbosity="INFO",
+                 show_progress_bars=True, retry_wait_schedule=None):
+        super().__init__(public_id=public_id, secret_key=secret_key,
+                         verbosity=verbosity, show_progress_bars=show_progress_bars)
+        
+        # If wait schedule is not set, set to default
+        if retry_wait_schedule is None:
+            retry_wait_schedule = [60, 60, 60, 60, 60, 600, 600, 600, 3600, 3600, 3600]
+        self.retry_wait_schedule = retry_wait_schedule
+        
+        self._raw_query_retry = True
+        
+        
     def __raw_query_patched(self, query, variables=None, authorization=False):
         """
         NumerAPI raw_query modified to not raise ValueErrors. Instead,
@@ -82,9 +95,12 @@ class RobustNumerAPI(numerapi.NumerAPI):
                 return self.__raw_query_patched(query, variables=variables,
                                                 authorization=authorization)
             except RequestException as e:
-                logger.error('Request failed: %s', e)
-                wait_for_retry(attempt_number)
-                attempt_number += 1
+                if self._raw_query_retry:
+                    logger.error('Request failed: %s', e)
+                    wait_for_retry(attempt_number, self.retry_wait_schedule)
+                    attempt_number += 1
+                else:
+                    raise e
 
                 # TODO: See if we need to re-raise some request exceptions
 
@@ -95,13 +111,16 @@ class RobustNumerAPI(numerapi.NumerAPI):
         """
         
         attempt_number = 0
+        self._raw_query_retry = False
         while True:
             try:
                 return super().upload_predictions(file_path, tournament=tournament)
             except RequestException as e:
                 logger.error('Upload request failed: %s', e)
-                wait_for_retry(attempt_number)
+                wait_for_retry(attempt_number, self.retry_wait_schedule)
                 attempt_number += 1
+            finally:
+                self._raw_query_retry = True
 
                 # TODO: See if we need to re-raise some request exceptions
 

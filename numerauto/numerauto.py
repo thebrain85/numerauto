@@ -8,6 +8,7 @@ import signal
 import sys
 import os
 import shutil
+import collections
 from pathlib import Path
 import logging
 
@@ -19,8 +20,11 @@ from .robust_numerapi import RobustNumerAPI
 from .utils import check_dataset
 from .utils import wait, wait_until
 
-
 logger = logging.getLogger(__name__)
+
+# Defaultdict that will fill missing values with itself, allowing nested
+# dictionary queries without first creating the keys.
+nested_defaultdict = lambda: collections.defaultdict(nested_defaultdict)
 
 
 class InterruptedException(Exception):
@@ -47,29 +51,58 @@ class Numerauto:
 
     Attributes:
         tournament_id: Numerai tournament id for which this instance will download data.
-        data_directory: Directory where to store data.
         napi: A robust version of NumerAPI (note that no API keys are supplied)
         event_handlers: List of event handlers that are bound to this instance.
-        dataset_path: Path of the last downloaded dataset.
         persistent_state: Internal storage of the current state of the daemon.
         round_number: Current round number.
+        tournaments: Dictionary mapping tournament ID to tournament name
+        report: Dictionary that event handlers can write to during round processing.
+        config: Dictionary that contains all Numerauto configuration entries
     """
 
-    def __init__(self, tournament_id=1, data_directory=Path('./data')):
+    def __init__(self, tournament_id=1, config={}):
         """
         Creates a Numerauto instance.
 
         Args:
             tournament_id: Numerai tournament id for which this instance will download data.
-            data_directory: Directory where to store data (default: ./data)
+            config: Dictionary containing configuration entries to replace the default values
         """
         self.tournament_id = tournament_id
-        self.data_directory = Path(data_directory)
-        self.napi = RobustNumerAPI(verbosity='warning', show_progress_bars=False)
         self.event_handlers = []
-        self.dataset_path = None
         self.persistent_state = None
         self.round_number = None
+        self.tournaments = None
+        self.report = None
+        
+        self.config = {
+                # Directory to store data
+                'data_directory': './data',
+                # Include validation data when checking for new training data
+                'check_validation_data': True,
+                # Seconds before planned round start to wake up and start checking
+                # if new round has started.
+                'wakeup_time': 360,
+                # Seconds to wait between each check for the new round.
+                'round_wait_interval': 60,
+                # If a dataset was downloaded that was not new, wait this many seconds
+                # before downloading the dataset again.
+                'invalid_dataset_waittime': 600,
+                # In single_run mode, maximum seconds to wait for a new round
+                'single_run_max_wait': 86400,
+                # Incremental waiting times for failed RobustNumerAPI queries (5x 1 minute, 3x 10 minutes, 3x 1 hour)
+                'napi_wait_schedule': [60, 60, 60, 60, 60, 600, 600, 600, 3600, 3600, 3600]
+                }
+        
+        # Add/replace user-defined config entries
+        self.config = {**self.config, **config}
+        
+        # Change data directory into a pathlib Path
+        self.config['data_directory'] = Path(self.config['data_directory'])
+        
+        self.napi = RobustNumerAPI(verbosity='warning', show_progress_bars=False,
+                                   retry_wait_schedule=self.config['napi_wait_schedule'])
+
 
     def add_event_handler(self, handler):
         """
@@ -96,42 +129,49 @@ class Numerauto:
 
         self.event_handlers = [h for h in self.event_handlers if h.name != handler_name]
 
-    def on_start(self):
+    def _on_start(self):
         """ Internal event on daemon start """
 
         logger.debug('on_start')
         for h in self.event_handlers:
             h.on_start()
 
-    def on_shutdown(self):
+    def _on_shutdown(self):
         """ Internal event on daemon shutdown """
 
         logger.debug('on_shutdown')
         for h in self.event_handlers:
             h.on_shutdown()
 
-    def on_round_begin(self, round_number):
+    def _on_round_begin(self, round_number):
         """ Internal event on round start """
 
         logger.debug('on_round_begin(%d)', round_number)
         for h in self.event_handlers:
             h.on_round_begin(round_number)
 
-    def on_new_training_data(self, round_number):
+    def _on_new_training_data(self, round_number):
         """ Internal event on detection of new training data """
 
         logger.debug('on_new_training_data(%d)', round_number)
         for h in self.event_handlers:
             h.on_new_training_data(round_number)
 
-    def on_new_tournament_data(self, round_number):
+    def _on_new_tournament_data(self, round_number):
         """ Internal event on detection of new tournament data """
 
         logger.debug('on_new_tournament_data(%d)', round_number)
         for h in self.event_handlers:
             h.on_new_tournament_data(round_number)
 
-    def check_new_training_data(self, round_number):
+    def _on_cleanup(self, round_number):
+        """ Internal event on end of round processing """
+
+        logger.debug('on_cleanup(%d)', round_number)
+        for h in self.event_handlers:
+            h.on_cleanup(round_number)
+
+    def _check_new_training_data(self, round_number):
         """
         Internal function to check if the newly downloaded dataset contains
         new training data.
@@ -143,27 +183,60 @@ class Numerauto:
                         'treating training data as new')
             return True
 
+        # Check if validation data has changed
+        if self.config['check_validation_data']:
+            filename_old = self.get_dataset_path(self.persistent_state['last_round_trained']) / 'numerai_tournament_data.csv'
+            filename_new = self.get_dataset_path(round_number) / 'numerai_tournament_data.csv'
+    
+            if check_dataset(filename_old, filename_new, data_type='validation'):
+                return True
+
         filename_old = self.get_dataset_path(self.persistent_state['last_round_trained']) / 'numerai_training_data.csv'
         filename_new = self.get_dataset_path(round_number) / 'numerai_training_data.csv'
+
         return check_dataset(filename_old, filename_new)
 
-    def on_round_begin_internal(self, round_number):
+    def _get_tournaments (self):
+        tournaments = self.napi.get_tournaments()
+        self.tournaments = {x['tournament']: x['name'] for x in tournaments}
+
+    def _on_round_begin_internal(self, round_number):
         """ Internal event on round start """
 
         logger.debug('on_round_begin_internal(%d)', round_number)
-        self.on_round_begin(round_number)
+        
+        # Update the ID to tournament name dictionary, do this every round
+        # in case of renaming of tournaments
+        self._get_tournaments()
+        
+        # Initialize round report dictionary
+        self.report = nested_defaultdict()
+        self.report['round'] = round_number
+        self.report['round_processing_start_time'] = datetime.datetime.now()
+        
+        self._on_round_begin(round_number)
 
         # Check if training is needed, if so call on_new_training_data
-        if self.check_new_training_data(round_number):
+        if self._check_new_training_data(round_number):
             # Signal new training data
-            self.on_new_training_data(round_number)
+            self._on_new_training_data(round_number)
             self.persistent_state['last_round_trained'] = round_number
 
             # Immediately save state to prevent retraining if other event handlers fail
             self.save_state()
 
         # Signal new tournament data
-        self.on_new_tournament_data(round_number)
+        self._on_new_tournament_data(round_number)
+        
+        self.report['round_processing_end_time'] = datetime.datetime.now()
+        
+        # Signal end of round
+        self._on_cleanup(round_number)
+        
+        print(self.report)
+        
+        # Reset report dictionary
+        self.report = None
 
 
     def wait_till_next_round(self):
@@ -181,8 +254,9 @@ class Numerauto:
 
         round_info = self.napi.get_current_round_details(tournament=self.tournament_id)
         dt_round_close = dateutil.parser.parse(round_info['closeTime'])
+        dt_round_close_atstart = dt_round_close
 
-        new_round_info = self.napi.get_current_round_details(tournament=self.tournament_id)
+        new_round_info = round_info
 
         dt_now = datetime.datetime.utcnow().replace(tzinfo=pytz.utc)
         logger.info('Waiting for round %d. Time to next round: %.1f hours',
@@ -192,14 +266,24 @@ class Numerauto:
         # Loop until the API reports a new round number
         while new_round_info['number'] == round_info['number']:
             dt_now = datetime.datetime.utcnow().replace(tzinfo=pytz.utc)
+            
+            # Update round close time in case of delays
+            # Report any delays to the log file
+            dt_round_close = dateutil.parser.parse(new_round_info['closeTime'])
+            if dt_round_close != dt_round_close_atstart:
+                logger.info('Round close time changed. Round %d got delayed by %1.f minutes',
+                            self.persistent_state['last_round_processed'] + 1,
+                            (dt_round_close - dt_round_close_atstart).total_seconds() / 60)
+                dt_round_close_atstart = dt_round_close
+            
             seconds_wait = (dt_round_close - dt_now).total_seconds() + 5
 
-            if seconds_wait > 360:
-                # Wait till 5 minutes before round start
-                wait_until(dt_round_close - datetime.timedelta(minutes=5))
+            if seconds_wait > self.config['wakeup_time']:
+                # Wait till 'wakeup_time' seconds before round start
+                wait_until(dt_round_close - datetime.timedelta(seconds=self.config['wakeup_time'] - 5))
             else:
-                # Then query round information every minute until round has started
-                wait(min(seconds_wait, 60))
+                # Then query round information every 'round_wait_interval' seconds until round has started
+                wait(min(seconds_wait, self.config['round_wait_interval']))
 
             new_round_info = self.napi.get_current_round_details(tournament=self.tournament_id)
             dt_now = datetime.datetime.utcnow().replace(tzinfo=pytz.utc)
@@ -209,22 +293,6 @@ class Numerauto:
                         (dt_round_close - dt_now).total_seconds() / 60)
 
         return new_round_info
-
-
-    def download_dataset(self):
-        """
-        Downloads the current dataset to the directory specified in the
-        data_directory attribute.
-
-        Returns:
-            Dataset path
-        """
-
-        logger.info('Downloading dataset')
-        self.dataset_path = self.napi.download_current_dataset(dest_path=self.data_directory,
-                                                               unzip=True,
-                                                               tournament=self.tournament_id)
-        return self.dataset_path
 
 
     def get_dataset_path(self, round_number):
@@ -238,10 +306,10 @@ class Numerauto:
             pathlib Path for the dataset of the requested round.
         """
 
-        return self.data_directory / 'numerai_dataset_{}'.format(round_number)
+        return self.config['data_directory'] / 'numerai_dataset_{}'.format(round_number)
 
 
-    def download_and_check(self):
+    def _download_and_check(self):
         """
         Download a new dataset and check whether it contains new tournament
         data.
@@ -252,12 +320,22 @@ class Numerauto:
 
         logger.debug('download_and_check')
         try:
-            self.download_dataset()
+            logger.info('Downloading dataset')
+            dataset_path = self.napi.download_current_dataset(dest_path=self.config['data_directory'],
+                                                                   unzip=True,
+                                                                   tournament=self.tournament_id)
 
             filename_old = self.get_dataset_path(self.round_number - 1) / 'numerai_tournament_data.csv'
             filename_new = self.get_dataset_path(self.round_number) / 'numerai_tournament_data.csv'
 
             valid = check_dataset(filename_old, filename_new, data_type='live')
+            
+            if not valid:
+                # Remove downloaded and unzipped files if dataset not new
+                os.remove(dataset_path)
+                if os.path.isdir(dataset_path[:-4]):
+                    shutil.rmtree(dataset_path[:-4])
+                    
         except requests.RequestException:
             import traceback
             msg = traceback.format_exc()
@@ -268,7 +346,7 @@ class Numerauto:
         return valid
 
 
-    def run_new_round(self):
+    def _run_new_round(self):
         """
         Internal function that downloads and verifies a new dataset and calls
         the internal event handlers.
@@ -277,23 +355,17 @@ class Numerauto:
         logger.debug('run_new_round')
 
         # Download data. If data is not valid, wait 10 minutes and try again.
-        valid = self.download_and_check()
+        valid = self._download_and_check()
 
         while not valid:
-            logger.info('run_new_round: New dataset is not valid, retrying in 10 minutes')
+            logger.info('run_new_round: New dataset is not valid, retrying in %.1f minutes',
+                        self.config['invalid_dataset_waittime']/60)
 
-            # Remove downloaded and unzipped files
-            if hasattr(self, 'dataset_path'):
-                os.remove(self.dataset_path)
-                if os.path.isdir(self.dataset_path[:-4]):
-                    shutil.rmtree(self.dataset_path[:-4])
-
-            wait(600)
-
-            valid = self.download_and_check()
+            wait(self.config['invalid_dataset_waittime'])
+            valid = self._download_and_check()
 
         # Call round begin event
-        self.on_round_begin_internal(self.round_number)
+        self._on_round_begin_internal(self.round_number)
 
         # Save current round as the last round processed
         self.persistent_state['last_round_processed'] = self.round_number
@@ -342,7 +414,6 @@ class Numerauto:
             pickle.dump(self.persistent_state, fp)
 
 
-
     # Run Numerauto in daemon mode
     def run(self, single_run=False):
         """
@@ -366,7 +437,7 @@ class Numerauto:
         self.load_state()
 
         # Trigger start event
-        self.on_start()
+        self._on_start()
 
         try:
             self.round_number = self.napi.get_current_round()
@@ -375,7 +446,7 @@ class Numerauto:
                     self.round_number > self.persistent_state['last_round_processed']):
                 logger.info('Current round (%d) does not appear to be processed',
                             self.round_number)
-                self.run_new_round()
+                self._run_new_round()
     
             logger.info('Entering daemon loop')
         
@@ -390,8 +461,8 @@ class Numerauto:
     
                         dt_round_close = dateutil.parser.parse(round_info['closeTime'])
                         dt_now = datetime.datetime.utcnow().replace(tzinfo=pytz.utc)
-    
-                        if (dt_round_close - dt_now).total_seconds() > 86400:
+
+                        if (dt_round_close - dt_now).total_seconds() > self.config['single_run_max_wait']:
                             logger.info('Single run stopping because new round is more than 1 day in the future')
                             break
     
@@ -399,17 +470,18 @@ class Numerauto:
                     round_info = self.wait_till_next_round()
 
                 self.round_number = round_info['number']
-                self.run_new_round()
+                self._run_new_round()
     
                 if single_run:
                     # Stop after processing one round
                     logger.info('Exiting daemon loop because of single_run')
                     break
+
         except InterruptedException:
             logger.info('Exiting daemon loop because of interrupt')
         
         # Trigger shutdown event
-        self.on_shutdown()
+        self._on_shutdown()
 
         # Save internal state
         self.save_state()

@@ -6,6 +6,7 @@ import os
 import logging
 import time
 import datetime
+import dateutil
 
 import pandas
 import pytz
@@ -36,7 +37,7 @@ def check_dataset(filename_old, filename_new, data_type=None):
         logger.info('check_dataset: No previous dataset available. Skipping check.')
         return True
 
-    logger.info('check_dataset: Checking %s vs %s', filename_old, filename_new)
+    logger.info('check_dataset: Checking %s vs %s (data type: %s)', filename_old, filename_new, data_type if data_type is not None else "all")
 
     # Read datasets
     old_dataset = pandas.read_csv(filename_old)
@@ -69,7 +70,6 @@ def check_dataset(filename_old, filename_new, data_type=None):
     return False
 
 
-
 def wait(seconds):
     """
     Helper function that waits for a given number of seconds while checking
@@ -95,7 +95,7 @@ def wait_until(timestamp):
         timestamp: datetime object indicating the date and time that should
                    be waited until.
     """
-    logger.debug('wait_until(%s)', timestamp)
+    logger.debug('wait_until(%s)', timestamp.astimezone(dateutil.tz.tzlocal()))
     dt_now = datetime.datetime.utcnow().replace(tzinfo=pytz.utc)
 
     while (timestamp - dt_now).total_seconds() > 0:
@@ -103,17 +103,10 @@ def wait_until(timestamp):
         dt_now = datetime.datetime.utcnow().replace(tzinfo=pytz.utc)
 
 
-def wait_for_retry(attempt_number):
+def wait_for_retry(attempt_number, waiting_schedule):
     logger.debug('wait_for_retry(%d)', attempt_number)
 
-    # Hardcoded retry schedule:
-    # 5x 1 minute
-    # 3x 10 minutes
-    # 3x 1 hour
-    # Fail afterwards (3 hours 35 minutes of retrying)
-    waiting_schedule = [60, 60, 60, 60, 60, 600, 600, 600, 3600, 3600, 3600]
-
     if attempt_number >= len(waiting_schedule):
-        raise RuntimeError('Request failed too many times')
+        raise RuntimeError('wait_for_retry: attempt_number too high')
 
     wait(waiting_schedule[attempt_number])

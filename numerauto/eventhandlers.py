@@ -6,11 +6,15 @@ import os
 from pathlib import Path
 import pickle
 import logging
+import collections
+import smtplib
 
 import pandas as pd
+from sklearn.metrics import log_loss
 
 from numerapi.utils import ensure_directory_exists
 from .robust_numerapi import RobustNumerAPI, NumerAPIError
+from .utils import wait_for_retry
 
 
 logger = logging.getLogger(__name__)
@@ -65,6 +69,10 @@ class EventHandler:
         for every new round.
         """
         pass
+    
+    def on_cleanup(self, round_number):
+        """ Triggered at the end of processing the current round """
+        pass
 
 
 class SKLearnModelTrainer(EventHandler):
@@ -73,10 +81,11 @@ class SKLearnModelTrainer(EventHandler):
     The model must implement the 'fit' and 'predict_proba' methods, and must be
     able to be written to file using pickle.
 
-    Each time the model is trained, it is saved to the ./models directory:
+    Each time the model is trained, it is saved to the
+    numerauto.config['model_directory'] directory (defaults to ./models):
         ./models/tournament_<name>/round_<num>/<name>.p
-    Each time the model is applied, predictions are written to the ./predictions
-    directory:
+    Each time the model is applied, predictions are written to the
+    numerauto.config['prediction_directory'] directory (defaults to ./predictions):
         ./predictions/tournament_<name>/round_<num>/<name>.csv
     """
 
@@ -95,61 +104,70 @@ class SKLearnModelTrainer(EventHandler):
         self.model_factory = model_factory
         self.tournament_id = tournament_id
 
-    def on_new_training_data(self, round_number):
-        # Get tournament name
-        napi = RobustNumerAPI()
+    def on_start(self):
         if self.tournament_id is None:
             self.tournament_id = self.numerauto.tournament_id
-        tournament_name = napi.tournament_number2name(self.tournament_id)
 
+        # Set default configuration
+        if 'prediction_directory' not in self.numerauto.config:
+            self.numerauto.config['prediction_directory'] = './predictions'
+        if 'model_directory' not in self.numerauto.config:
+            self.numerauto.config['model_directory'] = './models'
+            
+        # Turn model and prediction directory into pathlib Path
+        self.numerauto.config['prediction_directory'] = Path(self.numerauto.config['prediction_directory'])
+        self.numerauto.config['model_directory'] = Path(self.numerauto.config['model_directory'])
+
+    def on_new_training_data(self, round_number):
+        tournament_name = self.numerauto.tournaments[self.tournament_id]
+        
         train_x = pd.read_csv(self.numerauto.get_dataset_path(round_number) / 'numerai_training_data.csv', header=0)
         target_columns = set([x for x in list(train_x) if x[0:7] == 'target_'])
 
-        train_y = train_x['target_' + tournament_name].as_matrix()
-        train_x = train_x.drop({'id', 'era', 'data_type'} | target_columns, axis=1).as_matrix()
+        train_y = train_x['target_' + tournament_name].values
+        train_x = train_x.drop({'id', 'era', 'data_type'} | target_columns, axis=1).values
 
         logger.info('SKLearnModelTrainer(%s): Fitting model for tournament %s round %d',
                     self.name, tournament_name, round_number)
         model = self.model_factory()
         model.fit(train_x, train_y)
 
-        ensure_directory_exists(Path('./models/tournament_{}/round_{}'.format(tournament_name, round_number)))
-        model_filename = Path('./models/tournament_{}/round_{}/{}.p'.format(tournament_name, round_number, self.name))
+        ensure_directory_exists(self.numerauto.config['model_directory'] / 'tournament_{}/round_{}'.format(tournament_name, round_number))
+        model_filename = self.numerauto.config['model_directory'] / 'tournament_{}/round_{}/{}.p'.format(tournament_name, round_number, self.name)
         pickle.dump(model, open(model_filename, 'wb'))
 
     def on_new_tournament_data(self, round_number):
-        # Get tournament name
-        napi = RobustNumerAPI()
-        if self.tournament_id is None:
-            self.tournament_id = self.numerauto.tournament_id
-        tournament_name = napi.tournament_number2name(self.tournament_id)
+        tournament_name = self.numerauto.tournaments[self.tournament_id]
 
         test_x = pd.read_csv(self.numerauto.get_dataset_path(round_number) / 'numerai_tournament_data.csv', header=0)
         target_columns = set([x for x in list(test_x) if x[0:7] == 'target_'])
 
         test_ids = test_x['id']
-        test_x = test_x.drop({'id', 'era', 'data_type'} | target_columns, axis=1).as_matrix()
+        test_x = test_x.drop({'id', 'era', 'data_type'} | target_columns, axis=1).values
 
         logger.info('SKLearnModelTrainer(%s): Applying model for tournament %s round %d',
                     self.name, tournament_name, round_number)
-        model_filename = Path('./models/tournament_{}/round_{}/{}.p'.format(
-            tournament_name, self.numerauto.persistent_state['last_round_trained'], self.name))
+        model_filename = self.numerauto.config['model_directory'] / 'tournament_{}/round_{}/{}.p'.format(
+            tournament_name, self.numerauto.persistent_state['last_round_trained'], self.name)
         model = pickle.load(open(model_filename, 'rb'))
         predictions = model.predict_proba(test_x)[:, 1]
 
         df = pd.DataFrame(predictions, columns=['probability_' + tournament_name], index=test_ids)
-        ensure_directory_exists(Path('./predictions/tournament_{}/round_{}'.format(tournament_name, round_number)))
-        df.to_csv(Path('./predictions/tournament_{}/round_{}/{}.csv'.format(tournament_name, round_number, self.name)),
+        ensure_directory_exists(self.numerauto.config['prediction_directory'] / 'tournament_{}/round_{}'.format(tournament_name, round_number))
+        df.to_csv(self.numerauto.config['prediction_directory'] / 'tournament_{}/round_{}/{}.csv'.format(tournament_name, round_number, self.name),
                   index_label='id', float_format='%.8f')
+        
+        self.numerauto.report['predictions'][tournament_name][self.name + '.csv']['filename'] = self.numerauto.config['prediction_directory'] / 'tournament_{}/round_{}/{}.csv'.format(tournament_name, round_number, self.name)
 
 
 class PredictionUploader(EventHandler):
     """
-    Event handler that uploads a predictions file from the ./predictions directory
+    Event handler that uploads a predictions file from the
+    numerauto.config['prediction_directory'] directory (defaults to ./predictions)
     using the Numerai API.
     """
 
-    def __init__(self, name, filename, public_id, secret_key, tournament_id=None):
+    def __init__(self, name, filename, public_id, secret_key, tournament_id=None, verify_upload=True):
         """
         Creates a new PredictionUploader instance.
 
@@ -165,21 +183,62 @@ class PredictionUploader(EventHandler):
         self.public_id = public_id
         self.secret_key = secret_key
         self.tournament_id = tournament_id
+        self.verify_upload = verify_upload
 
+    def on_start(self):
+        if self.tournament_id is None:
+            self.tournament_id = self.numerauto.tournament_id
+        
+        # Set default configuration
+        if 'upload_verify_wait_schedule' not in self.numerauto.config:
+            self.numerauto.config['upload_verify_wait_schedule'] = [10, 10, 10, 10, 10, 10, 60, 60, 60, 60, 60, 600, 3600]
+        
+        if 'prediction_directory' not in self.numerauto.config:
+            self.numerauto.config['prediction_directory'] = './predictions'
+        
+        # Turn prediction directory in pathlib Path
+        self.numerauto.config['prediction_directory'] = Path(self.numerauto.config['prediction_directory'])
 
     def on_new_tournament_data(self, round_number):
         logger.info('PredictionUploader(%s): Uploading predictions for round %d: %s',
                     self.name, round_number, self.filename)
-        napi = RobustNumerAPI(public_id=self.public_id, secret_key=self.secret_key)
+        napi = RobustNumerAPI(public_id=self.public_id, secret_key=self.secret_key,
+                              retry_wait_schedule=self.numerauto.config['napi_wait_schedule'])
 
-        # Get tournament name
-        if self.tournament_id is None:
-            self.tournament_id = self.numerauto.tournament_id
-        tournament_name = napi.tournament_number2name(self.tournament_id)
+        tournament_name = self.numerauto.tournaments[self.tournament_id]
 
         try:
-            prediction_path = Path('./predictions/tournament_{}/round_{}/'.format(tournament_name, round_number))
-            napi.upload_predictions(prediction_path / self.filename, tournament=self.tournament_id)
+            prediction_path = self.numerauto.config['prediction_directory'] / 'tournament_{}/round_{}/'.format(tournament_name, round_number)
+            submission_id = napi.upload_predictions(prediction_path / self.filename, tournament=self.tournament_id)
+            print(submission_id)
+            
+            if self.verify_upload:
+                status = napi.submission_status(submission_id=submission_id)
+
+                attempts = 0
+                while status['concordance'] is None or \
+                      status['concordance']['pending'] or \
+                      status['originality'] is None or \
+                      status['originality']['pending']:
+                    wait_for_retry(attempts, self.numerauto.config['upload_verify_wait_schedule'])
+                    attempts += 1
+                    status = napi.submission_status(submission_id=submission_id)
+                
+                logger.info('PredictionUploader(%s): Upload verified: Logloss: %.4f Consistency: %.1f Originality: %r Concordance: %r',
+                            self.name, status['validation_logloss'], status['consistency'], status['originality']['value'], status['concordance']['value'])
+                
+                self.numerauto.report['submissions'][tournament_name][self.filename] = {
+                        'submission_id': submission_id,
+                        'filename': prediction_path / self.filename,
+                        'validation_logloss': status['validation_logloss'],
+                        'consistency': status['consistency'],
+                        'originality': status['originality']['value'],
+                        'concordance': status['concordance']['value']}
+            else:
+                self.numerauto.report['submissions'][tournament_name][self.filename] = {
+                    'submission_id': submission_id,
+                    'filename': prediction_path / self.filename}
+                
         except NumerAPIError as e:
             logger.error('PredictionUploader(%s): NumerAPI exception in tournament %s round %d: %s',
                          self.name, tournament_name, round_number, e)
@@ -228,3 +287,121 @@ class CommandlineExecutor(EventHandler):
 
             logger.info('CommandlineExecutor(%s): Executing command: %s', self.name, cmdline)
             os.system(cmdline)
+
+
+
+class PredictionStatisticsGenerator(EventHandler):
+    def __init__(self, name, filename, tournament_id=None):
+        super().__init__(name)
+        self.filename = filename
+        self.tournament_id = tournament_id
+        
+    def on_start(self):
+        if self.tournament_id is None:
+            self.tournament_id = self.numerauto.tournament_id
+        
+    def on_new_tournament_data(self, round_number):
+        tournament_name = self.numerauto.tournaments[self.tournament_id]
+
+        test_df = pd.read_csv(self.numerauto.get_dataset_path(round_number) / 'numerai_tournament_data.csv', header=0)
+        
+        prediction_path = self.numerauto.config['prediction_directory'] / 'tournament_{}/round_{}/'.format(tournament_name, round_number)
+        p_df = pd.read_csv(prediction_path / self.filename, header=0)
+        
+        val_eras = test_df[test_df['data_type'] == 'validation']['era'].unique()
+        
+        # TODO: sort by id
+        d = self.numerauto.report['predictions'][tournament_name][self.filename]
+        
+        consistency = 0
+        for e in val_eras:
+            d['validation_logloss'][e] = log_loss(test_df[test_df['era'] == e]['target_' + tournament_name],
+                                                  p_df[test_df['era'] == e]['probability_' + tournament_name])
+            consistency += d['validation_logloss'][e] <= 0.693
+
+        d['validation_logloss']['overall'] = log_loss(test_df[test_df['data_type'] == 'validation']['target_' + tournament_name],
+                                                      p_df[test_df['data_type'] == 'validation']['probability_' + tournament_name])
+        d['consistency'] = consistency / len(val_eras)
+
+
+
+class BasicReportWriter(EventHandler):
+    
+    def on_start(self):
+        if 'report_directory' not in self.numerauto.config:
+            self.numerauto.config['report_directory'] = './reports'
+
+        # Turn report directory in pathlib Path
+        self.numerauto.config['report_directory'] = Path(self.numerauto.config['report_directory'])
+
+    def on_cleanup(self, round_number):
+        # Function to turn nested_defaultdict back into normal dictionaries
+        to_dict = lambda x: {y: to_dict(x[y]) for y in x} if type(x) == collections.defaultdict else x
+        
+        ensure_directory_exists(self.numerauto.config['report_directory'])
+        filename = self.numerauto.config['report_directory'] / 'round_{}.txt'.format(round_number)
+        with open(filename, 'w') as f:
+            # Recurse through dictionary structure and write to file
+            def write_dict(d, indent=0):
+                for x in d:
+                    if type(d[x]) == dict:
+                        f.write('  '*indent + str(x) + ':\n')
+                        write_dict(d[x], indent+1)
+                    else:
+                        f.write('  '*indent + str(x) + ': ' + str(d[x]) + '\n')
+                        
+            logger.debug('BasicReportWriter(%s): Writing report to file: %s', self.name, filename)
+            write_dict(to_dict(self.numerauto.report))
+
+
+class BasicReportEmailer(EventHandler):
+    
+    def __init__(self, name, smtp_server, smtp_port, smtp_user, smtp_password, email_from, email_to, smtp_tls=True):
+        super().__init__(name)
+        
+        self.smtp_server = smtp_server
+        self.smtp_port = smtp_port
+        self.smtp_user = smtp_user
+        self.smtp_password = smtp_password
+        self.email_from = email_from
+        self.email_to = email_to
+        self.smtp_tls = smtp_tls
+
+    def on_cleanup(self, round_number):
+        # Function to turn nested_defaultdict back into normal dictionaries
+        to_dict = lambda x: {y: to_dict(x[y]) for y in x} if type(x) == collections.defaultdict else x
+        
+        # Recurse through dictionary structure and write to report to a string
+        def convert_dict(d, indent=0):
+            report = ''
+            for x in d:
+                if type(d[x]) == dict:
+                    report += '  '*indent + str(x) + ':\n'
+                    report += convert_dict(d[x], indent+1)
+                else:
+                    report += '  '*indent + str(x) + ': ' + str(d[x]) + '\n'
+            return report
+        
+        report = convert_dict(to_dict(self.numerauto.report))
+
+        try:
+            s = smtplib.SMTP(host=self.smtp_server, port=self.smtp_port)
+            
+            if self.smtp_tls:
+                s.starttls()
+    
+            s.login(self.smtp_user, self.smtp_password)
+                    
+            message_subject = 'Numerauto report: round {}'.format(round_number)
+    
+            message = "From: %s\n" % self.email_from \
+                    + "To: %s\n" % self.email_to \
+                    + "Subject: %s\n" % message_subject \
+                    + "\n"  \
+                    + report
+            logger.debug('BasicReportEmailer(%s): Sending report email', self.name)
+            s.sendmail(self.email_from, self.email_to, message)
+        except smtplib.SMTPException as e:
+            logger.error('BasicReportEmailer(%s): SMTP exception while attempting to send report email: %s',
+                         self.name, round_number, e)
+            
