@@ -440,7 +440,7 @@ class Numerauto:
         self._on_start()
 
         try:
-            self.round_number = self.napi.get_current_round()
+            self.round_number = self.napi.get_current_round(tournament=self.tournament_id)
             if (self.persistent_state['last_round_processed'] is None or
                     self.persistent_state['last_round_trained'] is None or
                     self.round_number > self.persistent_state['last_round_processed']):
@@ -451,7 +451,7 @@ class Numerauto:
             logger.info('Entering daemon loop')
         
             while True:
-                self.round_number = self.napi.get_current_round()
+                self.round_number = self.napi.get_current_round(tournament=self.tournament_id)
                 # Check if we didn't already pass into the next round
                 if self.round_number == self.persistent_state['last_round_processed']:
                     # In case of a single run, check whether we're not going to wait
