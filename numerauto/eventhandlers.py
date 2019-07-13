@@ -155,7 +155,7 @@ class SKLearnModelTrainer(EventHandler):
         model = pickle.load(open(model_filename, 'rb'))
         predictions = model.predict(test_x)
 
-        df = pd.DataFrame(predictions, columns=['predict_' + tournament_name], index=test_ids)
+        df = pd.DataFrame(predictions, columns=['prediction_' + tournament_name], index=test_ids)
         ensure_directory_exists(self.numerauto.config['prediction_directory'] / 'tournament_{}/round_{}'.format(tournament_name, round_number))
         df.to_csv(self.numerauto.config['prediction_directory'] / 'tournament_{}/round_{}/{}.csv'.format(tournament_name, round_number, self.name),
                   index_label='id', float_format='%.8f')
@@ -327,11 +327,11 @@ class PredictionStatisticsGenerator(EventHandler):
         consistency = 0
         for e in val_eras:
             d['validationCorrelation'][e] = spearmanr(test_df[test_df['era'] == e]['target_' + tournament_name],
-                                                  p_df[test_df['era'] == e]['predict_' + tournament_name])[0]
+                                                  p_df[test_df['era'] == e]['prediction_' + tournament_name])[0]
             consistency += d['validationCorrelation'][e] > 0
 
         d['validationCorrelation']['overall'] = spearmanr(test_df[test_df['data_type'] == 'validation']['target_' + tournament_name],
-                                                      p_df[test_df['data_type'] == 'validation']['predict_' + tournament_name])[0]
+                                                      p_df[test_df['data_type'] == 'validation']['prediction_' + tournament_name])[0]
         d['consistency'] = consistency / len(val_eras)
 
 
